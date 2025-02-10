@@ -1,0 +1,2 @@
+Migrated the acts_as_followers in this new followable_gem.
+Changed the acts_as_followable method to followable_behaviour and acts_as_follower to follower_behaviour.
