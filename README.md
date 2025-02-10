@@ -2,7 +2,7 @@
 
 This is a fork from [acts_as_follower](https://github.com/tcocca/acts_as_follower) that has not been updated since 2017.
 
-It's updated against Rails 7 and Ruby 3.1.
+It's updated against Rails 8 and Ruby 3.1.
 
 followable_behaviour is a gem to allow any model to follow any other model.
 This is accomplished through a double polymorphic relationship on the Follow model.
