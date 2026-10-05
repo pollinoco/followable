@@ -1,5 +1,9 @@
-module FollowableBehaviour #:nodoc:
+# frozen_string_literal: true
+
+module FollowableBehaviour
   module Follower
+    FOLLOWING_COUNT = /\Afollowing_(.+)_count\z/
+    FOLLOWING_LIST = /\Afollowing_(.+)\z/
 
     def self.included(base)
       base.extend ClassMethods
@@ -15,99 +19,109 @@ module FollowableBehaviour #:nodoc:
     end
 
     module InstanceMethods
-
-      # Returns true if this instance is following the object passed as an argument.
       def following?(followable)
-        0 < Follow.unblocked.for_follower(self).for_followable(followable).count
+        follows.unblocked.for_followable(followable).exists?
       end
 
-      # Returns the number of objects this instance is following.
       def follow_count
-        Follow.unblocked.for_follower(self).count
+        follows.unblocked.count
       end
 
-      # Creates a new follow record for this instance to follow the passed object.
-      # Does not allow duplicate records to be created.
-      def follow(followable)
-        if self != followable
-          params = {followable_id: followable.id, followable_type: parent_class_name(followable)}
-          self.follows.where(params).first_or_create!
-        end
+      # Crea el follow si no existe y devuelve el registro (el más reciente si
+      # hubiera duplicados). Con un índice único, dos altas concurrentes no
+      # dejan dos filas: la que pierde el INSERT relee la ganadora.
+      # Atributos extra se asignan en la misma escritura, sin un find posterior.
+      def follow(followable, attributes = {}, **kwargs)
+        return if self == followable || followable.blank?
+
+        attributes = sanitize_follow_attributes((attributes || {}).merge(kwargs))
+        lookup = {
+          followable_id: followable.id,
+          followable_type: parent_class_name(followable)
+        }
+        raise ArgumentError, "followable must be persisted" if lookup[:followable_id].blank?
+
+        record = follows.where(lookup).order(id: :desc).take
+        return apply_follow_attributes(record, attributes) if record
+
+        follows.create!(lookup.merge(attributes))
+      rescue ActiveRecord::RecordNotUnique
+        apply_follow_attributes(follows.where(lookup).order(id: :desc).take!, attributes)
       end
 
-      # Deletes the follow record if it exists.
+      # Destruye todos los follows activos de ese par. Devuelve los registros
+      # destruidos, o nil si no había ninguno (`if record.stop_following(other)`).
       def stop_following(followable)
-        if follow = get_follow(followable)
-          follow.destroy
-        end
+        destroyed = follows.unblocked.for_followable(followable).select(&:destroy)
+        destroyed.presence
       end
 
-      # returns the follows records to the current instance
       def follows_scoped
-        self.follows.unblocked.includes(:followable)
+        follows.unblocked.includes(:followable)
       end
 
-      # Returns the follow records related to this instance by type.
-      def follows_by_type(followable_type, options={})
-        follows_scope  = follows_scoped.for_followable_type(followable_type)
-        follows_scope = apply_options_to_scope(follows_scope, options)
+      def follows_by_type(followable_type, *args, **kwargs)
+        apply_options_to_scope(follows_scoped.for_followable_type(followable_type), merge_options(args, kwargs))
       end
 
-      # Returns the follow records related to this instance with the followable included.
-      def all_follows(options={})
-        follows_scope = follows_scoped
-        follows_scope = apply_options_to_scope(follows_scope, options)
+      def all_follows(*args, **kwargs)
+        apply_options_to_scope(follows_scoped, merge_options(args, kwargs))
       end
 
-      # Returns the actual records which this instance is following.
-      def all_following(options={})
-        all_follows(options).collect{ |f| f.followable }
+      def all_following(*args, **kwargs)
+        all_follows(*args, **kwargs).filter_map(&:followable)
       end
 
-      # Returns the actual records of a particular type which this record is following.
-      def following_by_type(followable_type, options={})
-        followables = followable_type.constantize.
-          joins(:followings).
-          where('follows.blocked'         => false,
-                'follows.follower_id'     => self.id,
-                'follows.follower_type'   => parent_class_name(self),
-                'follows.followable_type' => followable_type)
-        if options.has_key?(:limit)
-          followables = followables.limit(options[:limit])
-        end
-        if options.has_key?(:includes)
-          followables = followables.includes(options[:includes])
-        end
-        followables
+      def following_by_type(followable_type, *args, **kwargs)
+        klass = resolve_class(followable_type)
+        relation = klass.joins(:followings).where(
+          follows: {
+            blocked: false,
+            follower_id: id,
+            follower_type: parent_class_name(self),
+            followable_type: klass.base_class.name
+          }
+        )
+        apply_options_to_scope(relation, merge_options(args, kwargs))
       end
 
       def following_by_type_count(followable_type)
-        follows.unblocked.for_followable_type(followable_type).count
+        klass = resolve_class(followable_type)
+        scope = follows.unblocked.where(followable_type: klass.base_class.name)
+        scope = scope.where(followable_id: klass.select(:id)) if klass != klass.base_class
+        scope.count
       end
 
-      # Allows magic names on following_by_type
-      # e.g. following_users == following_by_type('User')
-      # Allows magic names on following_by_type_count
-      # e.g. following_users_count == following_by_type_count('User')
-      def method_missing(m, *args)
-        if m.to_s[/following_(.+)_count/]
-          following_by_type_count($1.singularize.classify)
-        elsif m.to_s[/following_(.+)/]
-          following_by_type($1.singularize.classify)
+      def method_missing(method_name, *args, **kwargs, &block)
+        kind, fragment = follower_dynamic_call(method_name)
+        case kind
+        when :count
+          following_by_type_count(fragment.singularize.classify)
+        when :list
+          following_by_type(fragment.singularize.classify, *args, **kwargs)
         else
           super
         end
       end
 
-      def respond_to?(m, include_private = false)
-        super || m.to_s[/following_(.+)_count/] || m.to_s[/following_(.+)/]
+      def respond_to_missing?(method_name, include_private = false)
+        follower_dynamic_call(method_name).present? || super
       end
 
-      # Returns a follow record for the current instance and followable object.
       def get_follow(followable)
-        self.follows.unblocked.for_followable(followable).first
+        follows.unblocked.for_followable(followable).order(id: :desc).take
       end
 
+      private
+
+      def follower_dynamic_call(method_name)
+        name = -method_name.to_s
+        if (match = FOLLOWING_COUNT.match(name))
+          [:count, match[1]]
+        elsif (match = FOLLOWING_LIST.match(name))
+          [:list, match[1]]
+        end
+      end
     end
   end
 end

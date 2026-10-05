@@ -1,2 +1,46 @@
-Migrated the acts_as_followers in this new followable_gem.
-Changed the acts_as_followable method to followable_behaviour and acts_as_follower to follower_behaviour.
+0.3.0
+-----
+
+Pensada para el uso real de Parze: un User sigue a una Store, el login llama a
+`follow` en cada sesión y los listados leen `follows` por tienda.
+
+Bugs
+- `Follow.recent` exigía un argumento y llamaba a `to_s(:db)`, eliminado en Rails 7.1.
+  Ahora `Follow.recent` y `Follow.recent(1.day.ago)` comparan el tiempo de verdad.
+- La migración del generador no cargaba: definía `ActsAsFollowerMigration` y luego
+  evaluaba `FollowableBehaviourMigration`. Además hacía `create_table force: true`,
+  que borra la tabla si ya existe.
+- El generador no estaba en la ruta que Rails busca (`rails generate followable_behaviour`).
+- `follow` hacía `first` (ORDER BY id ASC): con duplicados devolvía el más viejo.
+  Ahora devuelve el más nuevo, igual que el resto del proyecto.
+- `stop_following` destruía un solo follow activo. Si había duplicados, el usuario
+  seguía apareciendo como seguidor. Ahora destruye todos los activos y sigue
+  devolviendo un valor falso cuando no había ninguno.
+- `block` consultaba el follow dos veces.
+- `unblock` borraba una sola fila.
+- Los métodos mágicos (`following_stores`, `user_followers`) no aceptaban keywords
+  de Ruby 3 (`limit: 10`) y no los reenviaban.
+- `respond_to?` estaba redefinido en User y Store, así que cada comprobación pagaba
+  un método extra. Ahora usa `respond_to_missing?`.
+- Con STI, el tipo guardado es la clase base. `followers_by_type("Admin")` buscaba
+  `follower_type = "Admin"` y no encontraba nada.
+
+Rendimiento
+- `following?` y `followed_by?` usan `exists?` (LIMIT 1) en lugar de `COUNT(*)` o
+  de cargar el registro.
+- `follow` no escribe si el registro ya existe y no hay atributos nuevos. En el
+  login eso es un SELECT.
+- `follow(store, price_list_id:, seller_code:)` asigna esos datos en la misma
+  escritura. Antes el proyecto hacía follow + find_by + update.
+- Si hay índice único, un alta concurrente captura `RecordNotUnique` y relee la fila.
+- `followers` y `all_following` ya no meten nil cuando el registro seguido fue borrado
+  sin callback.
+- Los índices nuevos cubren los dos caminos: "¿este usuario sigue esta tienda?" y
+  "¿quién sigue esta tienda?", e impiden el duplicado. Sustituyen a los índices
+  `(id, type)`, que no sirven para una consulta polimórfica.
+
+0.2.1
+-----
+
+Fork de acts_as_follower. `followable_behaviour` y `follower_behaviour` sustituyen
+a `acts_as_followable` y `acts_as_follower` (los nombres viejos siguen como alias).

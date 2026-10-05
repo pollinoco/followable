@@ -1,0 +1,5 @@
+Description:
+    rails generate followable_behaviour
+
+    Crea app/models/follow.rb y la migración con los índices compuestos.
+    No hace falta un nombre: el modelo es siempre Follow.

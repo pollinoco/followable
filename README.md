@@ -2,7 +2,9 @@
 
 This is a fork from [acts_as_follower](https://github.com/tcocca/acts_as_follower) that has not been updated since 2017.
 
-It's updated against Rails 8 and Ruby 3.1.
+Updated for Ruby 3.2+ and Rails 7.1 / 8. The hot path is a user following a store:
+`follow` is a single read when the row already exists, and `following?` / `followed_by?`
+use `EXISTS` instead of `COUNT(*)`.
 
 followable_behaviour is a gem to allow any model to follow any other model.
 This is accomplished through a double polymorphic relationship on the Follow model.
@@ -59,7 +61,8 @@ To have an object start following another use the following:
 ```ruby
   book = Book.find(1)
   user = User.find(1)
-  user.follow(book) # Creates a record for the user as the follower and the book as the followable
+  user.follow(book) # Creates the Follow, or returns the existing one
+  user.follow(book, seller_code: "N1") # Same row, extra columns saved in that write
 ```
 
 To stop following an object use the following
@@ -79,7 +82,7 @@ To get the total number (count) of follows for a user use the following on a mod
 
 To get follow records that have not been blocked use the following
 ```ruby
-  user.all_follows # returns an array of Follow records
+  user.all_follows # ActiveRecord::Relation of unblocked Follow records
 ```
 
 To get all of the records that an object is following that have not been blocked use the following
@@ -90,12 +93,13 @@ To get all of the records that an object is following that have not been blocked
 
 To get all Follow records by a certain type use the following
 ```ruby
-  user.follows_by_type('Book') # returns an array of Follow objects where the followable_type is 'Book'
+  user.follows_by_type('Book') # relation of Follow rows whose followable_type is Book
 ```
 
 To get all followed objects by a certain type use the following.
 ```ruby
-  user.following_by_type('Book') # Returns an array of all followed objects for user where followable_type is 'Book', this can be a collection of different object types, eg: User, Book
+  user.following_by_type('Book') # relation of followed Books
+  user.following_by_type('Book', limit: 10) # keywords work on Ruby 3
 ```
 
 There is also a method_missing to accomplish the exact same thing a following_by_type('Book') to make you life easier
@@ -153,7 +157,7 @@ To get just the number of follows use
 
 To get the followers of a certain type, eg: all followers of type 'User'
 ```ruby
-  book.followers_by_type('User') # Returns an array of the user followers
+  book.followers_by_type('User') # relation of User followers (STI uses the base class stored on Follow)
 ```
 
 There is also a method_missing for this to make it easier:
@@ -220,7 +224,7 @@ The Follow model has a set of named_scope's.  In case you want to interface dire
   Follow.descending # returns all records in a descending order based on created_at datetime
 ```
 
-This method pulls all records created after a certain date.  The default is 2 weeks but it takes an optional parameter.
+Records created after a moment. The default is 2 weeks. The argument is optional.
 ```ruby
   Follow.recent
   Follow.recent(4.weeks.ago)
@@ -254,6 +258,23 @@ If you need blocked records only
   book.blocks
 ```
 
+
+## Indexes
+
+`follow` / `following?` look up `(follower_type, follower_id, followable_type, followable_id)`.
+Listing a store's followers looks up `(followable_type, followable_id, ...)`.
+Those are different leftmost prefixes, so they need two indexes. A unique index on the
+follower side also stops the double insert that `first_or_create!` can lose under concurrency.
+
+```ruby
+add_index :follows, [:follower_type, :follower_id, :followable_type, :followable_id],
+          unique: true, name: "index_follows_on_follower_and_followable"
+add_index :follows, [:followable_type, :followable_id, :follower_type, :follower_id],
+          name: "index_follows_on_followable_and_follower"
+```
+
+Indexes on `(follower_id, follower_type)` or `(followable_id, followable_type)` do not serve
+these queries: a polymorphic predicate always includes the type.
 
 ## Development
 

@@ -1,45 +1,40 @@
-module FollowableBehaviour #:nodoc:
+# frozen_string_literal: true
+
+require_relative "follower_lib"
+
+module FollowableBehaviour
   module FollowScopes
+    def self.extended(model)
+      return if model.respond_to?(:for_follower)
 
-    # returns Follow records where follower is the record passed in.
-    def for_follower(follower)
-      where(follower_id: follower.id, follower_type: parent_class_name(follower))
+      model.class_eval do
+        scope :for_follower, lambda { |follower|
+          where(
+            follower_id: follower.id,
+            follower_type: FollowableBehaviour::FollowerLib.parent_class_name(follower)
+          )
+        }
+
+        scope :for_followable, lambda { |followable|
+          where(
+            followable_id: followable.id,
+            followable_type: FollowableBehaviour::FollowerLib.parent_class_name(followable)
+          )
+        }
+
+        scope :for_follower_type, ->(follower_type) { where(follower_type: follower_type) }
+        scope :for_followable_type, ->(followable_type) { where(followable_type: followable_type) }
+
+        # `>` estricto, igual que el alcance original. El tiempo se pasa como
+        # objeto: `to_s(:db)` dejó de existir en Rails 7.1 y además perdía la zona.
+        scope :recent, lambda { |from = nil|
+          where(arel_table[:created_at].gt(from || 2.weeks.ago))
+        }
+
+        scope :descending, -> { order(arel_table[:created_at].desc) }
+        scope :unblocked, -> { where(blocked: false) }
+        scope :blocked, -> { where(blocked: true) }
+      end
     end
-
-    # returns Follow records where followable is the record passed in.
-    def for_followable(followable)
-      where(followable_id: followable.id, followable_type: parent_class_name(followable))
-    end
-
-    # returns Follow records where follower_type is the record passed in.
-    def for_follower_type(follower_type)
-      where(follower_type: follower_type)
-    end
-
-    # returns Follow records where followeable_type is the record passed in.
-    def for_followable_type(followable_type)
-      where(followable_type: followable_type)
-    end
-
-    # returns Follow records from past 2 weeks with default parameter.
-    def recent(from)
-      where(["created_at > ?", (from || 2.weeks.ago).to_s(:db)])
-    end
-
-    # returns Follow records in descending order.
-    def descending
-      order("follows.created_at DESC")
-    end
-
-    # returns unblocked Follow records.
-    def unblocked
-      where(blocked: false)
-    end
-
-    # returns blocked Follow records.
-    def blocked
-      where(blocked: true)
-    end
-
   end
 end
